@@ -94,7 +94,7 @@ export function getMimeType(file) {
  * @param {string} apiKey - Mistral API key
  * @returns {Promise<{pages: Array}>} OCR result
  */
-export async function performOCR(file, apiKey) {
+export async function performOCR(file, apiKey, options = {}) {
   const base64Data = await fileToBase64(file);
   const docType = getDocumentType(file);
   const mimeType = getMimeType(file);
@@ -113,7 +113,10 @@ export async function performOCR(file, apiKey) {
         [docType]: dataUrl
       },
       include_image_base64: true,
-      table_format: "markdown"
+      table_format: "markdown",
+      // When excluding, extract separately (text only). When including, keep in content (with images).
+      extract_header: options.excludeHeaders || false,
+      extract_footer: options.excludeFooters || false
     })
   });
 
@@ -137,7 +140,7 @@ export function combineMarkdown(ocrResult) {
   if (!ocrResult?.pages?.length) return "";
   return ocrResult.pages
     .sort((a, b) => a.index - b.index)
-    .map(page => page.markdown || "")
+    .map(page => inlineTableContent(page.markdown || "", page.tables))
     .join("\n\n---\n\n");
 }
 
@@ -189,13 +192,162 @@ export function processMarkdownImages(markdown, imagePrefix = "images/") {
 }
 
 /**
+ * Replace table placeholders with actual table content
+ * @param {string} markdown - Markdown content
+ * @param {Array<{id: string, content: string}>} tables - Tables array from OCR
+ * @returns {string} Markdown with tables inlined
+ */
+export function inlineTableContent(markdown, tables) {
+  if (!markdown || !tables?.length) return markdown;
+  let result = markdown;
+  for (const table of tables) {
+    if (table.id && table.content) {
+      const placeholder = `[${table.id}](${table.id})`;
+      result = result.replace(placeholder, table.content);
+    }
+  }
+  return result;
+}
+
+/**
+ * Decode HTML entities in LaTeX content
+ * @param {string} str - String with potential HTML entities
+ * @returns {string} String with decoded entities
+ */
+function decodeHtmlEntities(str) {
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"');
+}
+
+/**
+ * Check if string contains LaTeX-like patterns
+ * @param {string} str - String to check
+ * @returns {boolean} True if string looks like LaTeX
+ */
+function looksLikeMath(str) {
+  // Accept: backslash commands, superscripts, subscripts, braces, or letters()
+  return /[\\^_{}]/.test(str) || /[a-zA-Z()]+/.test(str.trim());
+}
+
+/**
+ * Extract LaTeX blocks from markdown before processing
+ * Protects LaTeX from being corrupted by markdown parser
+ * @param {string} markdown - Raw markdown content
+ * @returns {{markdown: string, blocks: Array}} Safe markdown and extracted blocks
+ */
+function extractLatexBlocks(markdown) {
+  const blocks = [];
+  let counter = 0;
+
+  // Extract display math $$...$$ (can span multiple lines)
+  markdown = markdown.replace(/\$\$([\s\S]+?)\$\$/g, (match, latex) => {
+    const placeholder = `%%LATEX_DISPLAY_${counter}%%`;
+    blocks.push({ placeholder, latex: latex.trim(), display: true });
+    counter++;
+    return placeholder;
+  });
+
+  // Extract inline math $...$ (single line, must look like math, preceded by whitespace)
+  markdown = markdown.replace(/(?<=\s|^)\$([^$\n]+)\$/g, (match, latex) => {
+    // if (!looksLikeMath(latex)) return match;
+    const placeholder = `%%LATEX_INLINE_${counter}%%`;
+    blocks.push({ placeholder, latex: latex.trim(), display: false });
+    counter++;
+    return placeholder;
+  });
+
+  return { markdown, blocks };
+}
+
+/**
+ * Restore LaTeX placeholders as SVG in HTML content
+ * @param {string} html - HTML with placeholders
+ * @param {Array} blocks - Extracted LaTeX blocks
+ * @returns {string} HTML with SVG math
+ */
+function restoreLatexAsSvg(html, blocks) {
+  if (typeof MathJax === 'undefined') return html;
+
+  for (const { placeholder, latex, display } of blocks) {
+    try {
+      const decodedLatex = decodeHtmlEntities(latex);
+      const svg = convertLatexToSvg(decodedLatex, display);
+      const wrapper = display
+        ? `<div class="math-display">${svg}</div>`
+        : `<span class="math-inline">${svg}</span>`;
+      html = html.replace(placeholder, wrapper);
+    } catch (e) {
+      // On error, restore original LaTeX syntax
+      const original = display ? `$$${latex}$$` : `$${latex}$`;
+      html = html.replace(placeholder, original);
+    }
+  }
+  return html;
+}
+
+/**
+ * Convert LaTeX expression to inline SVG string
+ * @param {string} latex - LaTeX expression (without delimiters)
+ * @param {boolean} display - True for display math, false for inline
+ * @returns {string} SVG markup
+ */
+export function convertLatexToSvg(latex, display = false) {
+  const wrapper = MathJax.tex2svg(latex, { display });
+  const svg = wrapper.querySelector('svg');
+  return svg.outerHTML;
+}
+
+/**
+ * Find and replace LaTeX expressions with SVG in HTML content
+ * @param {string} html - HTML content (after marked.parse)
+ * @returns {string} HTML with LaTeX replaced by SVG
+ */
+export function processLatexInHtml(html) {
+  if (!html || typeof MathJax === 'undefined') return html;
+
+  // Display math first: $$...$$ (can span multiple lines)
+  html = html.replace(/\$\$([^$]+)\$\$/g, (match, latex) => {
+    try {
+      const svg = convertLatexToSvg(decodeHtmlEntities(latex.trim()), true);
+      return `<div class="math-display">${svg}</div>`;
+    } catch (e) {
+      return match; // Return original on error
+    }
+  });
+
+  // Inline math: $...$ (must look like math, preceded by whitespace)
+  html = html.replace(/(?<=\s|^)\$([^$\n]+)\$/g, (match, latex) => {
+    if (!looksLikeMath(latex)) return match; // Skip currency
+    try {
+      const svg = convertLatexToSvg(decodeHtmlEntities(latex.trim()), false);
+      return `<span class="math-inline">${svg}</span>`;
+    } catch (e) {
+      return match; // Return original on error
+    }
+  });
+
+  return html;
+}
+
+/**
  * Generate HTML from markdown
  * @param {string} markdown - Markdown content
  * @param {string} title - Document title
  * @returns {string} HTML document
  */
 export function generateHTML(markdown, title = "Document") {
-  const htmlContent = marked.parse(markdown || "");
+  // 1. Extract LaTeX blocks BEFORE markdown processing to protect from corruption
+  const { markdown: safeMarkdown, blocks } = extractLatexBlocks(markdown || "");
+
+  // 2. Convert markdown to HTML (now safe - LaTeX replaced with placeholders)
+  let htmlContent = marked.parse(safeMarkdown);
+
+  // 3. Restore LaTeX blocks as SVG
+  htmlContent = restoreLatexAsSvg(htmlContent, blocks);
+
   const escapedTitle = escapeXML(title);
 
   return `<!DOCTYPE html>
@@ -212,7 +364,7 @@ export function generateHTML(markdown, title = "Document") {
       padding: 2rem;
       line-height: 1.6;
     }
-    img { max-width: 100%; height: auto; }
+    img, svg { max-width: 100%; height: auto; }
     pre { background: #f5f5f5; padding: 1rem; overflow-x: auto; }
     code { background: #f5f5f5; padding: 0.2em 0.4em; }
     table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
@@ -220,6 +372,9 @@ export function generateHTML(markdown, title = "Document") {
     th { background: #f5f5f5; }
     hr { margin: 2rem 0; border: none; border-top: 1px solid #ddd; }
     blockquote { border-left: 4px solid #ddd; margin: 1rem 0; padding-left: 1rem; color: #666; }
+    .math-display { text-align: center; margin: 1rem 0; }
+    .math-inline { vertical-align: middle; }
+    .math-inline svg, .math-display svg { vertical-align: middle; }
   </style>
 </head>
 <body>
@@ -321,7 +476,11 @@ ${imageManifest.join("\n")}
 
   // 7. OEBPS/content.xhtml (main content)
   const processedMarkdown = processMarkdownImages(markdown, "images/");
-  const htmlContent = marked.parse(processedMarkdown || "");
+
+  // Extract LaTeX blocks BEFORE markdown processing to protect from corruption
+  const { markdown: safeMarkdown, blocks } = extractLatexBlocks(processedMarkdown || "");
+  let htmlContent = marked.parse(safeMarkdown);
+  htmlContent = restoreLatexAsSvg(htmlContent, blocks);
 
   zip.file("OEBPS/content.xhtml", `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
@@ -330,11 +489,14 @@ ${imageManifest.join("\n")}
   <title>${escapedTitle}</title>
   <style>
     body { font-family: serif; margin: 1em; line-height: 1.6; }
-    img { max-width: 100%; height: auto; }
+    img, svg { max-width: 100%; height: auto; }
     pre { background: #f5f5f5; padding: 1em; overflow-x: auto; white-space: pre-wrap; }
     code { background: #f5f5f5; padding: 0.2em; }
     table { border-collapse: collapse; width: 100%; }
     th, td { border: 1px solid #999; padding: 0.5em; }
+    .math-display { text-align: center; margin: 1em 0; }
+    .math-inline { vertical-align: middle; }
+    .math-inline svg, .math-display svg { vertical-align: middle; }
   </style>
 </head>
 <body>
@@ -358,9 +520,10 @@ ${htmlContent}
  * Generate output ZIP with all formats
  * @param {{pages: Array}} ocrResult - OCR result
  * @param {string} originalFileName - Original file name
+ * @param {{excludeHeaders?: boolean, excludeFooters?: boolean}} options - Options
  * @returns {Promise<Blob>} ZIP blob
  */
-export async function generateOutputZip(ocrResult, originalFileName) {
+export async function generateOutputZip(ocrResult, originalFileName, options = {}) {
   const zip = new JSZip();
 
   // Extract title from filename
@@ -565,6 +728,8 @@ function App() {
   const [state, setState] = createStore({
     apiKey: localStorage.getItem("MISTRAL_API_KEY") || "",
     file: null,
+    excludeHeaders: false,
+    excludeFooters: false,
     status: "idle",
     progress: 0,
     statusMessage: "",
@@ -583,11 +748,16 @@ function App() {
     });
 
     try {
+      const options = {
+        excludeHeaders: state.excludeHeaders,
+        excludeFooters: state.excludeFooters
+      };
+
       setState({ status: "processing", progress: 30, statusMessage: "Sending to Mistral OCR..." });
-      const ocrResult = await performOCR(state.file, state.apiKey);
+      const ocrResult = await performOCR(state.file, state.apiKey, options);
 
       setState({ status: "converting", progress: 60, statusMessage: "Converting to multiple formats..." });
-      const outputZip = await generateOutputZip(ocrResult, state.file.name);
+      const outputZip = await generateOutputZip(ocrResult, state.file.name, options);
 
       const outputFileName = state.file.name.replace(/\.[^.]+$/, "") + "-ocr.zip";
       setState({
@@ -655,6 +825,29 @@ function App() {
         onFile=${(f) => setState({ file: f, status: "idle", error: null, outputZip: null })}
         disabled=${isLoading}
       />
+
+      <div class="mb-3">
+        <div class="form-check">
+          <input
+            type="checkbox"
+            class="form-check-input"
+            id="excludeHeaders"
+            checked=${() => state.excludeHeaders}
+            onChange=${(e) => setState("excludeHeaders", e.target.checked)}
+          />
+          <label class="form-check-label" for="excludeHeaders">Exclude headers</label>
+        </div>
+        <div class="form-check">
+          <input
+            type="checkbox"
+            class="form-check-input"
+            id="excludeFooters"
+            checked=${() => state.excludeFooters}
+            onChange=${(e) => setState("excludeFooters", e.target.checked)}
+          />
+          <label class="form-check-label" for="excludeFooters">Exclude footers</label>
+        </div>
+      </div>
 
       <${Show} when=${() => state.error}>
         <${ErrorDisplay}
