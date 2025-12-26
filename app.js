@@ -250,8 +250,8 @@ function extractLatexBlocks(markdown) {
     return placeholder;
   });
 
-  // Extract inline math $...$ (single line, must look like math, preceded by whitespace)
-  markdown = markdown.replace(/(?<=\s|^)\$([^$\n]+)\$/g, (match, latex) => {
+  // Extract inline math $...$ (single line, must look like math, preceded by whitespace or punctuation)
+  markdown = markdown.replace(/(?<=[\s([\-:]|^)\$([^$\n]+)\$/g, (match, latex) => {
     // if (!looksLikeMath(latex)) return match;
     const placeholder = `%%LATEX_INLINE_${counter}%%`;
     blocks.push({ placeholder, latex: latex.trim(), display: false });
@@ -318,8 +318,8 @@ export function processLatexInHtml(html) {
     }
   });
 
-  // Inline math: $...$ (must look like math, preceded by whitespace)
-  html = html.replace(/(?<=\s|^)\$([^$\n]+)\$/g, (match, latex) => {
+  // Inline math: $...$ (must look like math, preceded by whitespace or punctuation)
+  html = html.replace(/(?<=[\s([\-:]|^)\$([^$\n]+)\$/g, (match, latex) => {
     if (!looksLikeMath(latex)) return match; // Skip currency
     try {
       const svg = convertLatexToSvg(decodeHtmlEntities(latex.trim()), false);
