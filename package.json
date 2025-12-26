@@ -1,0 +1,28 @@
+{
+  "name": "ocr-mobi",
+  "version": "1.0.0",
+  "description": "OCR MOBI: Extract text PDFs to create eBooks using Mistral OCR.",
+  "main": "app.js",
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file .env server.js",
+    "test": "node --env-file .env integration.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/park-brian/ocr-mobi.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/park-brian/ocr-mobi/issues"
+  },
+  "homepage": "https://github.com/park-brian/ocr-mobi#readme",
+  "devDependencies": {
+    "express": "^5.2.1",
+    "jszip": "^3.10.1",
+    "marked": "^17.0.1",
+    "playwright": "^1.57.0",
+    "solid-js": "^1.9.10"
+  }
+}
