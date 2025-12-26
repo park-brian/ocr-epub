@@ -8,12 +8,8 @@ import { marked } from "marked";
 import { runTests } from "./app.test.js";
 // #endregion
 
-// #region Test Runner
-const queryParams = new URLSearchParams(location.search);
-if (queryParams.get("test") === "1") {
-    setTimeout(runTests, 0); // Defer so render happens first
-}
-// #endregion
+// Run tests if ?test=1 query param
+if (new URLSearchParams(location.search).get("test") === "1") setTimeout(runTests, 0);
 
 // #region File Utilities
 
@@ -222,15 +218,6 @@ function decodeHtmlEntities(str) {
     .replace(/&quot;/g, '"');
 }
 
-/**
- * Check if string contains LaTeX-like patterns
- * @param {string} str - String to check
- * @returns {boolean} True if string looks like LaTeX
- */
-function looksLikeMath(str) {
-  // Accept: backslash commands, superscripts, subscripts, braces, or letters()
-  return /[\\^_{}]/.test(str) || /[a-zA-Z()]+/.test(str.trim());
-}
 
 /**
  * Extract LaTeX blocks from markdown before processing
@@ -301,35 +288,14 @@ export function convertLatexToSvg(latex, display = false) {
 }
 
 /**
- * Find and replace LaTeX expressions with SVG in HTML content
- * @param {string} html - HTML content (after marked.parse)
- * @returns {string} HTML with LaTeX replaced by SVG
+ * Convert markdown to HTML with LaTeX support
+ * @param {string} markdown - Markdown content
+ * @returns {string} HTML content with SVG math
  */
-export function processLatexInHtml(html) {
-  if (!html || typeof MathJax === 'undefined') return html;
-
-  // Display math first: $$...$$ (can span multiple lines)
-  html = html.replace(/\$\$([^$]+)\$\$/g, (match, latex) => {
-    try {
-      const svg = convertLatexToSvg(decodeHtmlEntities(latex.trim()), true);
-      return `<div class="math-display">${svg}</div>`;
-    } catch (e) {
-      return match; // Return original on error
-    }
-  });
-
-  // Inline math: $...$ (must look like math, preceded by whitespace or punctuation)
-  html = html.replace(/(?<=[\s([\-:]|^)\$([^$\n]+)\$/g, (match, latex) => {
-    if (!looksLikeMath(latex)) return match; // Skip currency
-    try {
-      const svg = convertLatexToSvg(decodeHtmlEntities(latex.trim()), false);
-      return `<span class="math-inline">${svg}</span>`;
-    } catch (e) {
-      return match; // Return original on error
-    }
-  });
-
-  return html;
+function markdownToHtml(markdown) {
+  const { markdown: safe, blocks } = extractLatexBlocks(markdown || "");
+  let html = marked.parse(safe);
+  return restoreLatexAsSvg(html, blocks);
 }
 
 /**
@@ -339,15 +305,7 @@ export function processLatexInHtml(html) {
  * @returns {string} HTML document
  */
 export function generateHTML(markdown, title = "Document") {
-  // 1. Extract LaTeX blocks BEFORE markdown processing to protect from corruption
-  const { markdown: safeMarkdown, blocks } = extractLatexBlocks(markdown || "");
-
-  // 2. Convert markdown to HTML (now safe - LaTeX replaced with placeholders)
-  let htmlContent = marked.parse(safeMarkdown);
-
-  // 3. Restore LaTeX blocks as SVG
-  htmlContent = restoreLatexAsSvg(htmlContent, blocks);
-
+  const htmlContent = markdownToHtml(markdown);
   const escapedTitle = escapeXML(title);
 
   return `<!DOCTYPE html>
@@ -476,11 +434,7 @@ ${imageManifest.join("\n")}
 
   // 7. OEBPS/content.xhtml (main content)
   const processedMarkdown = processMarkdownImages(markdown, "images/");
-
-  // Extract LaTeX blocks BEFORE markdown processing to protect from corruption
-  const { markdown: safeMarkdown, blocks } = extractLatexBlocks(processedMarkdown || "");
-  let htmlContent = marked.parse(safeMarkdown);
-  htmlContent = restoreLatexAsSvg(htmlContent, blocks);
+  const htmlContent = markdownToHtml(processedMarkdown);
 
   zip.file("OEBPS/content.xhtml", `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
@@ -559,172 +513,11 @@ export async function generateOutputZip(ocrResult, originalFileName, options = {
 }
 // #endregion
 
-// #region UI Components
-
-function ApiKeyInput(props) {
-  function handleInput(e) {
-    const value = e.target.value;
-    props.onChange(value);
-    localStorage.setItem("MISTRAL_API_KEY", value);
-  }
-
-  return html`
-    <div class="mb-3">
-      <label for="apiKey" class="form-label">Mistral API Key</label>
-      <input
-        type="text"
-        class="form-control font-monospace"
-        id="apiKey"
-        placeholder="Enter your Mistral API key"
-        value=${props.value}
-        onInput=${handleInput}
-      />
-      <div class="form-text">Your API key is stored locally in your browser.</div>
-    </div>
-  `;
-}
-
-function FileUpload(props) {
-  let fileInputRef;
-  const [dragOver, setDragOver] = createSignal(false);
-
-  function handleDragOver(e) {
-    e.preventDefault();
-    setDragOver(true);
-  }
-
-  function handleDragLeave(e) {
-    e.preventDefault();
-    setDragOver(false);
-  }
-
-  function handleDrop(e) {
-    e.preventDefault();
-    setDragOver(false);
-    const file = e.dataTransfer?.files?.[0];
-    if (file) props.onFile(file);
-  }
-
-  function handleClick() {
-    fileInputRef?.click();
-  }
-
-  function formatFileSize(bytes) {
-    if (bytes < 1024) return bytes + " B";
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-  }
-
-  return html`
-    <div class="mb-3">
-      <label class="form-label">Upload Document</label>
-      <div
-        class=${() => `border rounded p-4 text-center cursor-pointer ${dragOver() ? 'border-primary bg-primary bg-opacity-10' : 'border-dashed'}`}
-        style="border-style: dashed; cursor: pointer;"
-        onDragOver=${(e) => handleDragOver(e)}
-        onDragLeave=${(e) => handleDragLeave(e)}
-        onDrop=${(e) => handleDrop(e)}
-        onClick=${(e) => handleClick()}
-      >
-        <input
-          ref=${el => fileInputRef = el}
-          type="file"
-          class="d-none"
-          accept=".pdf,.docx,.pptx,.txt,.epub,.png,.jpg,.jpeg,.gif,.webp,.tiff,.bmp"
-          onChange=${(e) => { const file = e.target?.files?.[0]; if (file) props.onFile(file); }}
-          disabled=${props.disabled}
-        />
-        <${Show}
-          when=${() => props.file}
-          fallback=${html`
-            <div>
-              <i class="bi bi-cloud-upload fs-1 text-muted"></i>
-              <p class="mb-0 mt-2">Drag and drop a file here, or click to select</p>
-              <small class="text-muted">Supports PDF, DOCX, PPTX, images, and more</small>
-            </div>
-          `}
-        >
-          <div>
-            <i class="bi bi-file-earmark-check fs-1 text-success"></i>
-            <p class="mb-0 mt-2 fw-medium">${() => props.file?.name}</p>
-            <small class="text-muted">${() => formatFileSize(props.file?.size || 0)}</small>
-          </div>
-        <//>
-      </div>
-    </div>
-  `;
-}
-
-function ProcessButton(props) {
-  return html`
-    <button
-      type="button"
-      class="btn btn-primary"
-      onClick=${(e) => props.onClick?.(e)}
-      disabled=${() => props.disabled}
-    >
-      <${Show}
-        when=${() => props.loading}
-        fallback=${html`<span><i class="bi bi-play-fill me-1"></i>Process Document</span>`}
-      >
-        <span>
-          <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
-          Processing...
-        </span>
-      <//>
-    </button>
-  `;
-}
-
-function ProgressDisplay(props) {
-  return html`
-    <div class="mb-3">
-      <div class="progress mb-2" style="height: 8px;">
-        <div
-          class="progress-bar ${() => props.status === 'error' ? 'bg-danger' : ''}"
-          role="progressbar"
-          style="width: ${() => props.progress}%"
-          aria-valuenow=${() => props.progress}
-          aria-valuemin="0"
-          aria-valuemax="100"
-        ></div>
-      </div>
-      <small class="text-muted">${() => props.message}</small>
-    </div>
-  `;
-}
-
-function DownloadButton(props) {
-  return html`
-    <button
-      type="button"
-      class="btn btn-success"
-      onClick=${(e) => props.onClick?.(e)}
-    >
-      <i class="bi bi-download me-1"></i>
-      Download ${() => props.fileName}
-    </button>
-  `;
-}
-
-function ErrorDisplay(props) {
-  return html`
-    <div class="alert alert-danger alert-dismissible fade show" role="alert">
-      <strong>Error:</strong> ${() => props.message}
-      <button
-        type="button"
-        class="btn-close"
-        onClick=${(e) => props.onDismiss?.(e)}
-        aria-label="Close"
-      ></button>
-    </div>
-  `;
-}
-// #endregion
-
-// #region Main App
+// #region App
 
 function App() {
+  let fileInputRef;
+  const [dragOver, setDragOver] = createSignal(false);
   const [state, setState] = createStore({
     apiKey: localStorage.getItem("MISTRAL_API_KEY") || "",
     file: null,
@@ -738,43 +531,31 @@ function App() {
     error: null
   });
 
+  const isLoading = () => ["uploading", "processing", "converting"].includes(state.status);
+  const canProcess = () => state.apiKey && state.file && !isLoading();
+  const formatFileSize = (bytes) => {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  };
+
+  function setFile(file) {
+    if (file) setState({ file, status: "idle", error: null, outputZip: null });
+  }
+
   async function processDocument() {
-    setState({
-      status: "uploading",
-      progress: 10,
-      statusMessage: "Preparing document...",
-      error: null,
-      outputZip: null
-    });
-
+    setState({ status: "uploading", progress: 10, statusMessage: "Preparing document...", error: null, outputZip: null });
     try {
-      const options = {
-        excludeHeaders: state.excludeHeaders,
-        excludeFooters: state.excludeFooters
-      };
-
+      const options = { excludeHeaders: state.excludeHeaders, excludeFooters: state.excludeFooters };
       setState({ status: "processing", progress: 30, statusMessage: "Sending to Mistral OCR..." });
       const ocrResult = await performOCR(state.file, state.apiKey, options);
-
       setState({ status: "converting", progress: 60, statusMessage: "Converting to multiple formats..." });
       const outputZip = await generateOutputZip(ocrResult, state.file.name, options);
-
       const outputFileName = state.file.name.replace(/\.[^.]+$/, "") + "-ocr.zip";
-      setState({
-        status: "complete",
-        progress: 100,
-        statusMessage: "Processing complete!",
-        outputZip,
-        outputFileName
-      });
+      setState({ status: "complete", progress: 100, statusMessage: "Processing complete!", outputZip, outputFileName });
     } catch (error) {
       console.error("Processing error:", error);
-      setState({
-        status: "error",
-        progress: 0,
-        statusMessage: "",
-        error: error.message || "An unexpected error occurred"
-      });
+      setState({ status: "error", progress: 0, statusMessage: "", error: error.message || "An unexpected error occurred" });
     }
   }
 
@@ -790,24 +571,6 @@ function App() {
     URL.revokeObjectURL(url);
   }
 
-  function resetState() {
-    setState({
-      file: null,
-      status: "idle",
-      progress: 0,
-      statusMessage: "",
-      outputZip: null,
-      outputFileName: "",
-      error: null
-    });
-  }
-
-  const canProcess = () => {
-    if (!state.apiKey || !state.file) return false;
-    return !["uploading", "processing", "converting"].includes(state.status);
-  };
-  const isLoading = () => ["uploading", "processing", "converting"].includes(state.status);
-
   return html`
     <div class="container py-4" style="max-width: 600px;">
       <header class="mb-4 text-center">
@@ -815,71 +578,111 @@ function App() {
         <p class="text-muted">Extract text from documents using Mistral OCR</p>
       </header>
 
-      <${ApiKeyInput}
-        value=${() => state.apiKey}
-        onChange=${(v) => setState("apiKey", v)}
-      />
+      <!-- API Key -->
+      <div class="mb-3">
+        <label for="apiKey" class="form-label">Mistral API Key</label>
+        <input
+          type="text"
+          class="form-control font-monospace"
+          id="apiKey"
+          placeholder="Enter your Mistral API key"
+          value=${() => state.apiKey}
+          onInput=${(e) => { setState("apiKey", e.target.value); localStorage.setItem("MISTRAL_API_KEY", e.target.value); }}
+        />
+        <div class="form-text">Your API key is stored locally in your browser.</div>
+      </div>
 
-      <${FileUpload}
-        file=${() => state.file}
-        onFile=${(f) => setState({ file: f, status: "idle", error: null, outputZip: null })}
-        disabled=${isLoading}
-      />
+      <!-- File Upload -->
+      <div class="mb-3">
+        <label class="form-label">Upload Document</label>
+        <div
+          class=${() => `border rounded p-4 text-center ${dragOver() ? 'border-primary bg-primary bg-opacity-10' : ''}`}
+          style="border-style: dashed; cursor: pointer;"
+          onDragOver=${(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave=${(e) => { e.preventDefault(); setDragOver(false); }}
+          onDrop=${(e) => { e.preventDefault(); setDragOver(false); setFile(e.dataTransfer?.files?.[0]); }}
+          onClick=${(e) => fileInputRef?.click()}
+        >
+          <input
+            ref=${(el) => fileInputRef = el}
+            type="file"
+            class="d-none"
+            accept=".pdf,.docx,.pptx,.txt,.epub,.png,.jpg,.jpeg,.gif,.webp,.tiff,.bmp"
+            onChange=${(e) => setFile(e.target?.files?.[0])}
+            disabled=${isLoading}
+          />
+          <${Show}
+            when=${() => state.file}
+            fallback=${html`
+              <div>
+                <i class="bi bi-cloud-upload fs-1 text-muted"></i>
+                <p class="mb-0 mt-2">Drag and drop a file here, or click to select</p>
+                <small class="text-muted">Supports PDF, DOCX, PPTX, images, and more</small>
+              </div>
+            `}
+          >
+            <div>
+              <i class="bi bi-file-earmark-check fs-1 text-success"></i>
+              <p class="mb-0 mt-2 fw-medium">${() => state.file?.name}</p>
+              <small class="text-muted">${() => formatFileSize(state.file?.size || 0)}</small>
+            </div>
+          <//>
+        </div>
+      </div>
 
+      <!-- Options -->
       <div class="mb-3">
         <div class="form-check">
-          <input
-            type="checkbox"
-            class="form-check-input"
-            id="excludeHeaders"
-            checked=${() => state.excludeHeaders}
-            onChange=${(e) => setState("excludeHeaders", e.target.checked)}
-          />
+          <input type="checkbox" class="form-check-input" id="excludeHeaders"
+            checked=${() => state.excludeHeaders} onChange=${(e) => setState("excludeHeaders", e.target.checked)} />
           <label class="form-check-label" for="excludeHeaders">Exclude headers</label>
         </div>
         <div class="form-check">
-          <input
-            type="checkbox"
-            class="form-check-input"
-            id="excludeFooters"
-            checked=${() => state.excludeFooters}
-            onChange=${(e) => setState("excludeFooters", e.target.checked)}
-          />
+          <input type="checkbox" class="form-check-input" id="excludeFooters"
+            checked=${() => state.excludeFooters} onChange=${(e) => setState("excludeFooters", e.target.checked)} />
           <label class="form-check-label" for="excludeFooters">Exclude footers</label>
         </div>
       </div>
 
+      <!-- Error -->
       <${Show} when=${() => state.error}>
-        <${ErrorDisplay}
-          message=${() => state.error}
-          onDismiss=${() => setState("error", null)}
-        />
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+          <strong>Error:</strong> ${() => state.error}
+          <button type="button" class="btn-close" onClick=${(e) => setState("error", null)} aria-label="Close"></button>
+        </div>
       <//>
 
+      <!-- Progress -->
       <${Show} when=${() => state.status !== "idle"}>
-        <${ProgressDisplay}
-          progress=${() => state.progress}
-          message=${() => state.statusMessage}
-          status=${() => state.status}
-        />
+        <div class="mb-3">
+          <div class="progress mb-2" style="height: 8px;">
+            <div
+              class=${() => `progress-bar ${state.status === 'error' ? 'bg-danger' : ''}`}
+              role="progressbar"
+              style=${() => `width: ${state.progress}%`}
+            ></div>
+          </div>
+          <small class="text-muted">${() => state.statusMessage}</small>
+        </div>
       <//>
 
+      <!-- Buttons -->
       <div class="d-flex gap-2 flex-wrap">
-        <${ProcessButton}
-          onClick=${(e) => processDocument()}
-          disabled=${() => !canProcess()}
-          loading=${() => isLoading()}
-        />
+        <button type="button" class="btn btn-primary" onClick=${(e) => processDocument()} disabled=${() => !canProcess()}>
+          <${Show} when=${isLoading} fallback=${html`<span><i class="bi bi-play-fill me-1"></i>Process Document</span>`}>
+            <span><span class="spinner-border spinner-border-sm me-1" role="status"></span>Processing...</span>
+          <//>
+        </button>
 
         <${Show} when=${() => state.outputZip}>
-          <${DownloadButton}
-            onClick=${(e) => downloadZip()}
-            fileName=${() => state.outputFileName}
-          />
+          <button type="button" class="btn btn-success" onClick=${(e) => downloadZip()}>
+            <i class="bi bi-download me-1"></i>Download ${() => state.outputFileName}
+          </button>
         <//>
 
         <${Show} when=${() => state.status === "complete" || state.status === "error"}>
-          <button type="button" class="btn btn-outline-secondary" onClick=${(e) => resetState()}>
+          <button type="button" class="btn btn-outline-secondary"
+            onClick=${(e) => setState({ file: null, status: "idle", progress: 0, statusMessage: "", outputZip: null, outputFileName: "", error: null })}>
             <i class="bi bi-arrow-counterclockwise me-1"></i>Reset
           </button>
         <//>
