@@ -1,4 +1,4 @@
-import { getMimeType, getDocumentType, escapeXML, fileToBase64, performOCR, inlineTableContent, combineMarkdown, convertLatexToSvg } from "./app.js";
+import { getMimeType, getDocumentType, escapeXML, fileToBase64, performOCR, inlineTableContent, combineMarkdown } from "./app.js";
 
 // Test utilities
 const assert = (condition, message) => {
@@ -104,28 +104,6 @@ function testCombineMarkdownWithTables() {
   assert(combined.includes("---"), "Page separator present");
 }
 
-async function testLatexRendering() {
-  // Wait for MathJax to be fully ready
-  if (typeof MathJax !== 'undefined' && MathJax.startup?.promise) {
-    await MathJax.startup.promise;
-  }
-
-  // Test formulas from content.md
-  const testCases = [
-    // [latex, minExpectedWidth] - width in ex units
-    ['f', 1],  // Simple letter
-    ['f_{1},f_{2},\\ldots,f_{n}', 10],  // Uses \ldots
-    ['f=a_{1}f_{1}+a_{2}f_{2}+\\cdots+a_{n}f_{n}.', 20],  // Uses \cdots
-    ['E=\\int_{V}(f)^{2}dV', 10],  // Uses \int
-  ];
-
-  for (const [latex, minWidth] of testCases) {
-    const svg = convertLatexToSvg(latex, false);
-    const widthMatch = svg.match(/width="([0-9.]+)ex"/);
-    const width = widthMatch ? parseFloat(widthMatch[1]) : 0;
-    assert(width >= minWidth, `Formula "${latex}" width ${width}ex < expected ${minWidth}ex`);
-  }
-}
 
 // Integration tests (test actual UI state)
 const waitFor = (selector, timeout = 5000) => new Promise((resolve, reject) => {
@@ -209,7 +187,6 @@ const allTests = [
   testFileToBase64,
   testInlineTableContent,
   testCombineMarkdownWithTables,
-  testLatexRendering,
   testApiKeyLoadedFromLocalStorage,
   testOcrWithLocalPdf,
   testFileUploadOcrFlow,

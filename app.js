@@ -13,72 +13,39 @@ if (new URLSearchParams(location.search).get("test") === "1") setTimeout(runTest
 
 // #region File Utilities
 
-const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "tiff", "bmp", "avif", "heic", "heif"];
+const MIME_TYPES = {
+  pdf: "application/pdf",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  txt: "text/plain",
+  epub: "application/epub+zip",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  tiff: "image/tiff",
+  bmp: "image/bmp",
+  avif: "image/avif",
+  heic: "image/heic",
+  heif: "image/heif"
+};
+const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "tiff", "bmp", "avif", "heic", "heif"]);
 
-/**
- * Convert a File or ArrayBuffer to base64 string
- * @param {File|ArrayBuffer} input - File object or ArrayBuffer
- * @returns {Promise<string>} Base64 encoded string
- */
+const getExt = file => file.name.split(".").pop().toLowerCase();
+
 export async function fileToBase64(input) {
-  const arrayBuffer = typeof input?.arrayBuffer === "function"
-    ? await input.arrayBuffer()
-    : input;
-  const bytes = new Uint8Array(arrayBuffer);
-  return btoa(bytes.reduce((s, b) => s + String.fromCharCode(b), ""));
+  const arrayBuffer = typeof input?.arrayBuffer === "function" ? await input.arrayBuffer() : input;
+  return btoa(new Uint8Array(arrayBuffer).reduce((s, b) => s + String.fromCharCode(b), ""));
 }
 
-/**
- * Decode base64 string to Uint8Array
- * @param {string} base64 - Base64 encoded string
- * @returns {Uint8Array} Decoded bytes
- */
 export function base64ToBytes(base64) {
   const data = base64.includes(",") ? base64.split(",")[1] : base64;
-  const binaryData = atob(data);
-  const bytes = new Uint8Array(binaryData.length);
-  for (let i = 0; i < binaryData.length; i++) {
-    bytes[i] = binaryData.charCodeAt(i);
-  }
-  return bytes;
+  return Uint8Array.from(atob(data), c => c.charCodeAt(0));
 }
 
-/**
- * Determine document type for Mistral OCR API
- * @param {File|{name: string}} file - File object or object with name property
- * @returns {"image_url"|"document_url"} Document type for API
- */
-export function getDocumentType(file) {
-  const ext = file.name.split(".").pop().toLowerCase();
-  return IMAGE_EXTENSIONS.includes(ext) ? "image_url" : "document_url";
-}
-
-/**
- * Get MIME type for a file
- * @param {File|{name: string}} file - File object or object with name property
- * @returns {string} MIME type
- */
-export function getMimeType(file) {
-  const mimeMap = {
-    pdf: "application/pdf",
-    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    txt: "text/plain",
-    epub: "application/epub+zip",
-    png: "image/png",
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    gif: "image/gif",
-    webp: "image/webp",
-    tiff: "image/tiff",
-    bmp: "image/bmp",
-    avif: "image/avif",
-    heic: "image/heic",
-    heif: "image/heif"
-  };
-  const ext = file.name.split(".").pop().toLowerCase();
-  return mimeMap[ext] || "application/octet-stream";
-}
+export const getDocumentType = file => IMAGE_EXTS.has(getExt(file)) ? "image_url" : "document_url";
+export const getMimeType = file => MIME_TYPES[getExt(file)] || "application/octet-stream";
 
 // #endregion
 
@@ -206,96 +173,31 @@ export function inlineTableContent(markdown, tables) {
 }
 
 /**
- * Decode HTML entities in LaTeX content
- * @param {string} str - String with potential HTML entities
- * @returns {string} String with decoded entities
+ * Convert LaTeX to SVG, falling back to original syntax if MathJax unavailable
  */
-function decodeHtmlEntities(str) {
-  return str
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"');
-}
-
-
-/**
- * Extract LaTeX blocks from markdown before processing
- * Protects LaTeX from being corrupted by markdown parser
- * @param {string} markdown - Raw markdown content
- * @returns {{markdown: string, blocks: Array}} Safe markdown and extracted blocks
- */
-function extractLatexBlocks(markdown) {
-  const blocks = [];
-  let counter = 0;
-
-  // Extract display math $$...$$ (can span multiple lines)
-  markdown = markdown.replace(/\$\$([\s\S]+?)\$\$/g, (match, latex) => {
-    const placeholder = `%%LATEX_DISPLAY_${counter}%%`;
-    blocks.push({ placeholder, latex: latex.trim(), display: true });
-    counter++;
-    return placeholder;
-  });
-
-  // Extract inline math $...$ (single line, must look like math, preceded by whitespace or punctuation)
-  markdown = markdown.replace(/(?<=[\s([\-:]|^)\$([^$\n]+)\$/g, (match, latex) => {
-    // if (!looksLikeMath(latex)) return match;
-    const placeholder = `%%LATEX_INLINE_${counter}%%`;
-    blocks.push({ placeholder, latex: latex.trim(), display: false });
-    counter++;
-    return placeholder;
-  });
-
-  return { markdown, blocks };
-}
-
-/**
- * Restore LaTeX placeholders as SVG in HTML content
- * @param {string} html - HTML with placeholders
- * @param {Array} blocks - Extracted LaTeX blocks
- * @returns {string} HTML with SVG math
- */
-function restoreLatexAsSvg(html, blocks) {
-  if (typeof MathJax === 'undefined') return html;
-
-  for (const { placeholder, latex, display } of blocks) {
-    try {
-      const decodedLatex = decodeHtmlEntities(latex);
-      const svg = convertLatexToSvg(decodedLatex, display);
-      const wrapper = display
-        ? `<div class="math-display">${svg}</div>`
-        : `<span class="math-inline">${svg}</span>`;
-      html = html.replace(placeholder, wrapper);
-    } catch (e) {
-      // On error, restore original LaTeX syntax
-      const original = display ? `$$${latex}$$` : `$${latex}$`;
-      html = html.replace(placeholder, original);
-    }
+function latexToSvg(tex, display) {
+  if (typeof MathJax === 'undefined') return display ? `$$${tex}$$` : `$${tex}$`;
+  try {
+    // Decode HTML entities that may be in OCR output
+    const decoded = tex.trim().replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+    const svg = MathJax.tex2svg(decoded, { display }).querySelector('svg').outerHTML;
+    const cls = display ? 'math-display' : 'math-inline';
+    return display ? `<div class="${cls}">${svg}</div>` : `<span class="${cls}">${svg}</span>`;
+  } catch {
+    return display ? `$$${tex}$$` : `$${tex}$`;
   }
-  return html;
 }
 
 /**
- * Convert LaTeX expression to inline SVG string
- * @param {string} latex - LaTeX expression (without delimiters)
- * @param {boolean} display - True for display math, false for inline
- * @returns {string} SVG markup
- */
-export function convertLatexToSvg(latex, display = false) {
-  const wrapper = MathJax.tex2svg(latex, { display });
-  const svg = wrapper.querySelector('svg');
-  return svg.outerHTML;
-}
-
-/**
- * Convert markdown to HTML with LaTeX support
- * @param {string} markdown - Markdown content
- * @returns {string} HTML content with SVG math
+ * Convert markdown to HTML, rendering LaTeX as SVG
  */
 function markdownToHtml(markdown) {
-  const { markdown: safe, blocks } = extractLatexBlocks(markdown || "");
-  let html = marked.parse(safe);
-  return restoreLatexAsSvg(html, blocks);
+  if (!markdown) return "";
+  // Convert LaTeX to SVG first (SVG passes through marked unchanged)
+  const withSvg = markdown
+    .replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) => latexToSvg(tex, true))
+    .replace(/(?<=[\s([\-:]|^)\$([^$\n]+)\$/g, (_, tex) => latexToSvg(tex, false));
+  return marked.parse(withSvg);
 }
 
 /**
@@ -523,48 +425,39 @@ function App() {
     file: null,
     excludeHeaders: false,
     excludeFooters: false,
-    status: "idle",
-    progress: 0,
-    statusMessage: "",
-    outputZip: null,
-    outputFileName: "",
-    error: null
+    status: "idle", // idle | processing | complete | error
+    error: null,
+    output: null // { blob, filename }
   });
 
-  const isLoading = () => ["uploading", "processing", "converting"].includes(state.status);
-  const canProcess = () => state.apiKey && state.file && !isLoading();
-  const formatFileSize = (bytes) => {
-    if (bytes < 1024) return bytes + " B";
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-  };
+  const isProcessing = () => state.status === "processing";
+  const canProcess = () => state.apiKey && state.file && !isProcessing();
+  const formatFileSize = bytes => bytes < 1024 ? bytes + " B" : bytes < 1024 * 1024 ? (bytes / 1024).toFixed(1) + " KB" : (bytes / (1024 * 1024)).toFixed(1) + " MB";
 
   function setFile(file) {
-    if (file) setState({ file, status: "idle", error: null, outputZip: null });
+    if (file) setState({ file, status: "idle", error: null, output: null });
   }
 
   async function processDocument() {
-    setState({ status: "uploading", progress: 10, statusMessage: "Preparing document...", error: null, outputZip: null });
+    setState({ status: "processing", error: null, output: null });
     try {
       const options = { excludeHeaders: state.excludeHeaders, excludeFooters: state.excludeFooters };
-      setState({ status: "processing", progress: 30, statusMessage: "Sending to Mistral OCR..." });
       const ocrResult = await performOCR(state.file, state.apiKey, options);
-      setState({ status: "converting", progress: 60, statusMessage: "Converting to multiple formats..." });
-      const outputZip = await generateOutputZip(ocrResult, state.file.name, options);
-      const outputFileName = state.file.name.replace(/\.[^.]+$/, "") + "-ocr.zip";
-      setState({ status: "complete", progress: 100, statusMessage: "Processing complete!", outputZip, outputFileName });
+      const blob = await generateOutputZip(ocrResult, state.file.name, options);
+      const filename = state.file.name.replace(/\.[^.]+$/, "") + "-ocr.zip";
+      setState({ status: "complete", output: { blob, filename } });
     } catch (error) {
       console.error("Processing error:", error);
-      setState({ status: "error", progress: 0, statusMessage: "", error: error.message || "An unexpected error occurred" });
+      setState({ status: "error", error: error.message || "An unexpected error occurred" });
     }
   }
 
   function downloadZip() {
-    if (!state.outputZip) return;
-    const url = URL.createObjectURL(state.outputZip);
+    if (!state.output) return;
+    const url = URL.createObjectURL(state.output.blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = state.outputFileName;
+    a.download = state.output.filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -609,7 +502,7 @@ function App() {
             class="d-none"
             accept=".pdf,.docx,.pptx,.txt,.epub,.png,.jpg,.jpeg,.gif,.webp,.tiff,.bmp"
             onChange=${(e) => setFile(e.target?.files?.[0])}
-            disabled=${isLoading}
+            disabled=${isProcessing}
           />
           <${Show}
             when=${() => state.file}
@@ -652,37 +545,23 @@ function App() {
         </div>
       <//>
 
-      <!-- Progress -->
-      <${Show} when=${() => state.status !== "idle"}>
-        <div class="mb-3">
-          <div class="progress mb-2" style="height: 8px;">
-            <div
-              class=${() => `progress-bar ${state.status === 'error' ? 'bg-danger' : ''}`}
-              role="progressbar"
-              style=${() => `width: ${state.progress}%`}
-            ></div>
-          </div>
-          <small class="text-muted">${() => state.statusMessage}</small>
-        </div>
-      <//>
-
       <!-- Buttons -->
       <div class="d-flex gap-2 flex-wrap">
         <button type="button" class="btn btn-primary" onClick=${(e) => processDocument()} disabled=${() => !canProcess()}>
-          <${Show} when=${isLoading} fallback=${html`<span><i class="bi bi-play-fill me-1"></i>Process Document</span>`}>
+          <${Show} when=${isProcessing} fallback=${html`<span><i class="bi bi-play-fill me-1"></i>Process Document</span>`}>
             <span><span class="spinner-border spinner-border-sm me-1" role="status"></span>Processing...</span>
           <//>
         </button>
 
-        <${Show} when=${() => state.outputZip}>
+        <${Show} when=${() => state.output}>
           <button type="button" class="btn btn-success" onClick=${(e) => downloadZip()}>
-            <i class="bi bi-download me-1"></i>Download ${() => state.outputFileName}
+            <i class="bi bi-download me-1"></i>Download ${() => state.output?.filename}
           </button>
         <//>
 
         <${Show} when=${() => state.status === "complete" || state.status === "error"}>
           <button type="button" class="btn btn-outline-secondary"
-            onClick=${(e) => setState({ file: null, status: "idle", progress: 0, statusMessage: "", outputZip: null, outputFileName: "", error: null })}>
+            onClick=${(e) => setState({ file: null, status: "idle", error: null, output: null })}>
             <i class="bi bi-arrow-counterclockwise me-1"></i>Reset
           </button>
         <//>
@@ -699,7 +578,5 @@ function App() {
 // #endregion
 
 // #region Render
-if (typeof document !== "undefined") {
-  render(App, document.getElementById("app"));
-}
+render(App, document.getElementById("app"));
 // #endregion
