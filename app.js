@@ -224,6 +224,7 @@ export function generateHTML(markdown, title = "Document") {
       padding: 2rem;
       line-height: 1.6;
     }
+    img { display: block; }
     img, svg { max-width: 100%; height: auto; }
     pre { background: #f5f5f5; padding: 1rem; overflow-x: auto; }
     code { background: #f5f5f5; padding: 0.2em 0.4em; }
@@ -345,6 +346,7 @@ ${imageManifest.join("\n")}
   <title>${escapedTitle}</title>
   <style>
     body { font-family: serif; margin: 1em; line-height: 1.6; }
+    img { display: block; }
     img, svg { max-width: 100%; height: auto; }
     pre { background: #f5f5f5; padding: 1em; overflow-x: auto; white-space: pre-wrap; }
     code { background: #f5f5f5; padding: 0.2em; }
