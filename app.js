@@ -173,41 +173,137 @@ export function inlineTableContent(markdown, tables) {
 }
 
 /**
- * Convert LaTeX to SVG, falling back to original syntax if MathJax unavailable
+ * Convert SVG element to PNG data URL via canvas
+ * @param {SVGElement} svg - SVG element to convert
+ * @param {number} scale - Scale factor for resolution (default 1x)
+ * @returns {Promise<string>} PNG data URL
  */
-function latexToSvg(tex, display) {
+async function svgToPngDataUrl(svg, scale = 1) {
+  const clone = svg.cloneNode(true);
+
+  // MathJax uses 'ex' units - convert to pixels (1ex ≈ 8px at 16px font)
+  const exToPx = 8;
+  const widthAttr = svg.getAttribute('width');
+  const heightAttr = svg.getAttribute('height');
+  let width = 100, height = 100;
+
+  if (widthAttr?.endsWith('ex')) {
+    width = Math.ceil(parseFloat(widthAttr) * exToPx);
+  } else if (widthAttr) {
+    width = parseFloat(widthAttr) || 100;
+  }
+  if (heightAttr?.endsWith('ex')) {
+    height = Math.ceil(parseFloat(heightAttr) * exToPx);
+  } else if (heightAttr) {
+    height = parseFloat(heightAttr) || 100;
+  }
+
+  // Set explicit pixel dimensions
+  clone.setAttribute('width', width);
+  clone.setAttribute('height', height);
+
+  // MathJax uses currentColor - replace with black for standalone rendering
+  clone.style.color = '#000';
+  clone.querySelectorAll('*').forEach(el => {
+    if (el.getAttribute('fill') === 'currentColor') el.setAttribute('fill', '#000');
+    if (el.getAttribute('stroke') === 'currentColor') el.setAttribute('stroke', '#000');
+  });
+
+  // Add xmlns for standalone SVG
+  clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+
+  const svgString = new XMLSerializer().serializeToString(clone);
+  const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(svgBlob);
+
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = width * scale;
+      canvas.height = height * scale;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Failed to load SVG'));
+    };
+    img.src = url;
+  });
+}
+
+/**
+ * Convert LaTeX to PNG image, falling back to original syntax if unavailable
+ * @param {string} tex - LaTeX string
+ * @param {boolean} display - Display mode (block) vs inline
+ * @returns {Promise<string>} HTML img tag or raw LaTeX
+ */
+async function latexToImage(tex, display) {
   if (typeof MathJax === 'undefined') return display ? `$$${tex}$$` : `$${tex}$`;
   try {
     // Decode HTML entities that may be in OCR output
     const decoded = tex.trim().replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-    const svg = MathJax.tex2svg(decoded, { display }).querySelector('svg').outerHTML;
+    const container = MathJax.tex2svg(decoded, { display });
+    const svg = container.querySelector('svg');
+    if (!svg) throw new Error('No SVG generated');
+
+    const pngDataUrl = await svgToPngDataUrl(svg);
     const cls = display ? 'math-display' : 'math-inline';
-    return display ? `<div class="${cls}">${svg}</div>` : `<span class="${cls}">${svg}</span>`;
+    const style = display ? 'display:block;' : 'display:inline-block;';
+    const altText = escapeXML(tex).replace(/[\r\n]+/g, ' ').trim();
+    return `<img class="${cls}" src="${pngDataUrl}" alt="${altText}" style="${style}">`;
   } catch {
     return display ? `$$${tex}$$` : `$${tex}$`;
   }
 }
 
 /**
- * Convert markdown to HTML, rendering LaTeX as SVG
+ * Convert markdown to HTML, rendering LaTeX as PNG images
  */
-function markdownToHtml(markdown) {
+async function markdownToHtml(markdown) {
   if (!markdown) return "";
-  // Convert LaTeX to SVG first (SVG passes through marked unchanged)
-  const withSvg = markdown
-    .replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) => latexToSvg(tex, true))
-    .replace(/(?<=[\s([\-:]|^)\$([^$\n]+)\$/g, (_, tex) => latexToSvg(tex, false));
-  return marked.parse(withSvg);
+
+  // Collect all LaTeX matches with their positions
+  const replacements = [];
+
+  // Display math: $$...$$
+  for (const match of markdown.matchAll(/\$\$([\s\S]+?)\$\$/g)) {
+    replacements.push({ start: match.index, end: match.index + match[0].length, tex: match[1], display: true });
+  }
+
+  // Inline math: $...$ (with lookbehind for word boundary)
+  for (const match of markdown.matchAll(/(?<=[\s([\-:]|^)\$([^$\n]+)\$/g)) {
+    replacements.push({ start: match.index, end: match.index + match[0].length, tex: match[1], display: false });
+  }
+
+  // Sort by position descending so we can replace from end to start
+  replacements.sort((a, b) => b.start - a.start);
+
+  // Convert each LaTeX to PNG (in parallel for speed)
+  const converted = await Promise.all(replacements.map(r => latexToImage(r.tex, r.display)));
+
+  // Replace from end to start to preserve indices
+  let result = markdown;
+  for (let i = 0; i < replacements.length; i++) {
+    const r = replacements[i];
+    result = result.slice(0, r.start) + converted[i] + result.slice(r.end);
+  }
+
+  return marked.parse(result);
 }
 
 /**
  * Generate HTML from markdown
  * @param {string} markdown - Markdown content
  * @param {string} title - Document title
- * @returns {string} HTML document
+ * @returns {Promise<string>} HTML document
  */
-export function generateHTML(markdown, title = "Document") {
-  const htmlContent = markdownToHtml(markdown);
+export async function generateHTML(markdown, title = "Document") {
+  const htmlContent = await markdownToHtml(markdown);
   const escapedTitle = escapeXML(title);
 
   return `<!DOCTYPE html>
@@ -224,7 +320,6 @@ export function generateHTML(markdown, title = "Document") {
       padding: 2rem;
       line-height: 1.6;
     }
-    img { display: block; }
     img, svg { max-width: 100%; height: auto; }
     pre { background: #f5f5f5; padding: 1rem; overflow-x: auto; }
     code { background: #f5f5f5; padding: 0.2em 0.4em; }
@@ -233,9 +328,8 @@ export function generateHTML(markdown, title = "Document") {
     th { background: #f5f5f5; }
     hr { margin: 2rem 0; border: none; border-top: 1px solid #ddd; }
     blockquote { border-left: 4px solid #ddd; margin: 1rem 0; padding-left: 1rem; color: #666; }
-    .math-display { text-align: center; margin: 1rem 0; }
-    .math-inline { vertical-align: middle; }
-    .math-inline svg, .math-display svg { vertical-align: middle; }
+    .math-display { display: block; text-align: center; margin: 1rem 0; }
+    .math-inline { display: inline-block; vertical-align: middle; }
   </style>
 </head>
 <body>
@@ -337,7 +431,7 @@ ${imageManifest.join("\n")}
 
   // 7. OEBPS/content.xhtml (main content)
   const processedMarkdown = processMarkdownImages(markdown, "images/");
-  const htmlContent = markdownToHtml(processedMarkdown);
+  const htmlContent = await markdownToHtml(processedMarkdown);
 
   zip.file("OEBPS/content.xhtml", `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
@@ -346,15 +440,13 @@ ${imageManifest.join("\n")}
   <title>${escapedTitle}</title>
   <style>
     body { font-family: serif; margin: 1em; line-height: 1.6; }
-    img { display: block; }
     img, svg { max-width: 100%; height: auto; }
     pre { background: #f5f5f5; padding: 1em; overflow-x: auto; white-space: pre-wrap; }
     code { background: #f5f5f5; padding: 0.2em; }
     table { border-collapse: collapse; width: 100%; }
     th, td { border: 1px solid #999; padding: 0.5em; }
-    .math-display { text-align: center; margin: 1em 0; }
-    .math-inline { vertical-align: middle; }
-    .math-inline svg, .math-display svg { vertical-align: middle; }
+    .math-display { display: block; text-align: center; margin: 1em 0; }
+    .math-inline { display: inline-block; vertical-align: middle; }
   </style>
 </head>
 <body>
@@ -396,7 +488,7 @@ export async function generateOutputZip(ocrResult, originalFileName, options = {
   zip.file("content.md", processedMarkdown);
 
   // 2. Add content.html
-  const htmlDoc = generateHTML(processedMarkdown, title);
+  const htmlDoc = await generateHTML(processedMarkdown, title);
   zip.file("content.html", htmlDoc);
 
   // 3. Add images folder
